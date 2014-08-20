@@ -1,13 +1,6 @@
 #include <efi.h>
 #include <efilib.h>
 
-EFI_GUID 							gEfiBlockIoProtocolGuid = BLOCK_IO_PROTOCOL;
-EFI_GUID 							gEfiSimpleFileSystemProtocolGuid = SIMPLE_FILE_SYSTEM_PROTOCOL;
-EFI_GUID 							gEfiFileSystemVolumeLableIdGuid = EFI_FILE_SYSTEM_VOLUME_LABEL_INFO_ID;
-EFI_GUID 							gEfiDevicePathProtocolGuid = DEVICE_PATH_PROTOCOL;
-
-EFI_BOOT_SERVICES 					*mBS;
-
 #define EfiBootServiceData 4
 #pragma pack(1)
 typedef struct{
@@ -20,56 +13,21 @@ typedef struct{
 }LEGACY_MBR_PARTITION_RECORD;
 
 typedef struct{
-	UINT8							BootCode[424];
+	UINT8							BootCode[440];
 	UINT32							UniqueMBRDiskSignature;
 	UINT16							Unknown;
 	LEGACY_MBR_PARTITION_RECORD		PartitionRecord[4];
 	UINT16							Signature;
-	//UINT8*							Reserved;
 }LEGACY_MBR;
 #pragma pack()
 
-/*
-UINTN DPLength(EFI_DEVICE_PATH *DPath){
-	UINTN Length = 0 ;
-	EFI_DEVICE_PATH *tempDPath = DPath;
-	
-	while(!IsDevicePathEnd(tempDPath)){
-		Length+=DevicePathNodeLength(tempDPath);
-		tempDPath = NextDevicePathNode(tempDPath);
-	}
-	
-	return Length + sizeof(EFI_DEVICE_PATH);
-}
+EFI_GUID 							gEfiBlockIoProtocolGuid = BLOCK_IO_PROTOCOL;
+EFI_GUID 							gEfiSimpleFileSystemProtocolGuid = SIMPLE_FILE_SYSTEM_PROTOCOL;
+EFI_GUID 							gEfiFileSystemVolumeLableIdGuid = EFI_FILE_SYSTEM_VOLUME_LABEL_INFO_ID;
+EFI_GUID 							gEfiDevicePathProtocolGuid = DEVICE_PATH_PROTOCOL;
 
+EFI_BOOT_SERVICES 					*mBS;
 
-EFI_DEVICE_PATH* AddDevicePath(EFI_DEVICE_PATH *dpath1, EFI_DEVICE_PATH *dpath2){
-	
-	VOID *newdpath;
-	UINTN Length1,Length2;
-	
-	Length1 = DPLength(dpath1)-sizeof(EFI_DEVICE_PATH);
-	Length2 = DPLength(dpath2);
-	
-	newdpath = AllocatePool(Length1+Length2);
-	
-	CopyMem(newdpath,dpath1,Length1);
-	CopyMem((((UINT8*)newdpath)+Length1+1),dpath2,Length2);
-	
-	return (EFI_DEVICE_PATH*)newdpath;
-}
-
-
-EFI_DEVICE_PATH *AddFilePath(EFI_DEVICE_PATH *dpath, CHAR16 *fpath){
-	
-	EFI_DEVICE_PATH FilePath;
-	
-	FilePath.
-	
-	
-
-}
-*/
 
 VOID *
 GetLastDevicePathNode(
@@ -277,12 +235,13 @@ isTFPartExistEntry(
 	//CHAR16								*FilePath = L"\\EFI\\X64\\RU.efi";
 	EFI_HANDLE							TargetFileImageHandle;
 	
-
-	
-	
+	//initial Print function
 	InitializeLib(ImageHandle, SystemTable);
+	//initial BootServices
 	mBS = SystemTable->BootServices;
 	
+	//locate all handles that supports simple file system protocol
+	//must call Free(HandleBuffer)
 	Status = mBS->LocateHandleBuffer(
 				ByProtocol,
 				&gEfiSimpleFileSystemProtocolGuid,
@@ -296,9 +255,11 @@ isTFPartExistEntry(
 		return EFI_UNSUPPORTED;
 	}
 
+	//scan all simple file system volume
 	for(index = 0 ; index < HandleCount ; index++ ){
 		Print(L"Open SimpleFileSystem Protocol...\n");
-	
+		
+		//open simple file system protocol
 		Status = mBS->OpenProtocol (
 					HandleBuffer[index], 
 					&gEfiSimpleFileSystemProtocolGuid, 
@@ -314,15 +275,17 @@ isTFPartExistEntry(
 			continue;
 		}
 		
-		
+		//get lable id of this volume
+		//must call Free(LableIdBuffer)
 		LableIdBuffer = GetFileSystemVolumeLableID(SimpleFileSystem);
 		
+		//compare lable id of this volume
 		if( StrCmp((CHAR16*)LableIdBuffer,LableId)!=0 ){
 			Print(L"LableId not match.\n");
 			continue;
 		}
 		
-
+		//get device path of this volume
 		Status = mBS->OpenProtocol (
 				HandleBuffer[index], 
 				&gEfiDevicePathProtocolGuid, 
@@ -337,11 +300,14 @@ isTFPartExistEntry(
 			Print(L"Open DevicePath error.\n");
 			continue;
 		}
-
+		
+		//get partition number of this volume
 		PartitionNumber = ((HARDDRIVE_DEVICE_PATH*)GetLastDevicePathNode(DevicePath))->PartitionNumber;
 		
+		//get BlockIo Handle of Physical Drive that contains this volume 
 		PhysicalBlockIoHandle = GetPhysicalBlockIoHandle(ImageHandle,HandleBuffer[index]);
 		
+		//open BlockIo protocol of Physical Drive
 		Status = mBS->OpenProtocol (
 			PhysicalBlockIoHandle, 
 			&gEfiBlockIoProtocolGuid, 
@@ -357,6 +323,8 @@ isTFPartExistEntry(
 			continue;
 		}
 		
+		//allocate memory for reading block data
+		//must call Free(PhysicalBlockBuffer)
 		Status = mBS->AllocatePool(
 					EfiBootServicesData,
 					PhysicalBlockIo->Media->BlockSize,
@@ -369,6 +337,7 @@ isTFPartExistEntry(
 			continue;
 		}
 		
+		//read LBA0 Block ioto memory
 		Status = PhysicalBlockIo->ReadBlocks(
 							PhysicalBlockIo,
 							PhysicalBlockIo->Media->MediaId,
@@ -383,16 +352,19 @@ isTFPartExistEntry(
 			continue;
 		}
 		
+		//compare MBR signature
 		if( ((LEGACY_MBR*)PhysicalBlockBuffer)->Signature != 0xAA55 ){
 			Print(L"Not MBR Signature.\n");
 			continue;
 		}
 		
+		//compare OSType of the PartitionRecord of this volume
 		if( ((LEGACY_MBR*)PhysicalBlockBuffer)->PartitionRecord[PartitionNumber-1].OSType != 0x12 ){
 			Print(L"OS Type != 0x12.\n");
 			continue;
 		}
 		
+		//append file path after the device path of this volume
 		TargetFileDevicePath = FileDevicePath(HandleBuffer[index],FilePath);
 		break;
 	}
@@ -402,6 +374,7 @@ isTFPartExistEntry(
 		return EFI_UNSUPPORTED;
 	}
 	
+	//load .efi file as image
 	Status = mBS->LoadImage(
 				FALSE,
 				ImageHandle,
@@ -416,6 +389,7 @@ isTFPartExistEntry(
 		return Status;
 	}
 	
+	//start this image 
 	Status = mBS->StartImage(
 				TargetFileImageHandle,
 				NULL,
